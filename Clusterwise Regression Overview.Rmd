@@ -1,0 +1,222 @@
+---
+title: "Clusterwise Regression"
+author: "Brandon Hoeft"
+date: "March 19, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Overview of Clusterwise Regression
+
+Clusterwise regression is applied OLS regression in the context of a population that may exhibit latent classes. The theory behind the method is that there may be distinct, multiple populations in the data whose separate signals prevent a single regression model from measuring the true functional relationship in the data. To identify the latent classes within a supervised modeling framework, k classes can be identified in an iterative remodeling process. This unsupervised/supervised model concept was introduced to me by Dr. Chaturvedi, a professor of Machine Learning at Northwestern University as a challenge to write an algorithm encompassing the proceedingly described logic. I believe this method may be useful for regression problems that yield poor performance in terms of insignificant goodness-of-fit tests, or more importantly, poor prediction accuracy when a single fitted OLS model scores an unseen validation dataset. Lack of fit or predictive performance may be indicative of latent classes within the underlying population. 
+
+#### Clusterwise Algorithm in English
+
+1. Select the number K clusters associated with the number of distinct populations theorized to exist within the data.
+2. Randomly assign all observations to 1 of K clusters to start.
+3. Perform the following steps iteratively until convergence occurs or a stopping rule is met:
+    a. Perform OLS regression in each K clusters.
+    b. Run each n observations through each K models and measure the squared residual error from each fit.
+    c. Reassign each observation to the Kth cluster whose model yielded the minimal squared error.
+    d. Refit K models on the reclassified n observations. 
+
+For this algorithm, a statistical convergence across K models is not used to terminate the algorithm as the math is beyond the scope of my current capacities. Instead, since the k models will improve with each iteration, due to the squared error reduction criterion, the algorithm ceases based on the argument passed of how many iterations should be tried. 
+
+#### Example Dataset
+
+The dataset used for this analysis is the ***Auto*** dataset in the ***ISLR*** package. This dataset includes 392 different cars, with up to 7 data features that will be used to predict gas mileage, ***mpg***. 
+
+```{r echo = FALSE, message = FALSE, comment = ""}
+library(ISLR)
+library(dplyr) 
+auto <- tbl_df(Auto)
+auto
+```
+
+#### Fully Fit Model & Diagnostic Plots
+
+Summary statistics for the OLS regression fit to the entire 392 observations are presented below. The model appears to do a good job of measuring the variation in ***mpg*** with a high r-squared value of 0.82. The confidence intervals show that the estimated beta coefficients for all but cylinders, horsepower, and acceleration parameters would include a nonzero population parameter estimate, 95% of the time.  Diagnostic plots show some heteroskedastic residuals, meaning that there may be some misspecification in the full model. Perhaps there are potential nonlinear patterns unaccounted for in the data. Another possibility is that there are distinct populations in the data that could be better represented by distinct functions. 
+
+```{r echo = FALSE, message = FALSE, comment = ""}
+full.model <- lm(mpg ~.-name, data = Auto)
+summary(full.model)
+
+# 95% confidence intervals of full model beta estimates
+confint(full.model)
+
+par(mfrow = c(2,2))
+#plot(predict(full.model), residuals(full.model), ylab = "Residuals") 
+#plot(predict(full.model), rstudent(full.model), ylab = "Standardized Residuals")
+plot(full.model)
+
+```
+
+#### Run Clusterwise Regression Algorithm
+
+The proceeding code is my clusterwise regression algorithm discussed above. 
+
+```{r echo = TRUE, message = FALSE, comment = ""}
+
+clustreg <- function(x.dataframe, target.vector, cluster.size, tries, seed) {
+  x.data <- x.dataframe
+  #target <- target.var
+  k <- cluster.size
+  n.tries <- tries
+  
+  set.seed(seed)
+  x.data$cluster <- cut(seq(1:nrow(x.data)), breaks = k, labels = F) %>%
+    sample(size = nrow(x.data))
+  #sample(cut(seq(1:nrow(df)), breaks = k, labels = F), size = nrow(df))
+  
+  for(i in 1:n.tries) {
+    
+    models <- list()
+    names(models) <- c()
+  
+      for(i in 1:k) {
+        lm.fit <- lm(target.vector ~.-cluster, data = x.data, subset = cluster == i)
+        
+        models[[i]] <- lm.fit # assign each model as new model component in list [[]]
+        names(models)[i] <- gsub(" ", "", paste("lm", i)) # name each model in the list
+      }
+    
+      # run each record through k different models to get predicted squared error term
+      run.models <- function(x) {(target.vector - predict(models[[x]], newdata = x.data))^2}
+      sq.errors <- sapply(1:k, run.models) %>%
+        data.frame()
+      new.cluster <- sapply(1:nrow(sq.errors), function(row.index) {
+                            which.min(sq.errors[row.index, 1:k])})
+      x.data$cluster <- new.cluster
+  }
+  
+  k.models <- list(assigned.cluster = data.frame(final.cluster = new.cluster), model.fits = models) 
+}
+
+```
+
+***clustreg*** returns a list, which includes components of the cluster assignments, and each linear model object for each of k clusters. 
+
+#### Run the Algorithm
+
+I run the auto data through the **clustreg** function. 2 and 3 cluster solutions over 30 iterations both yielded better goodness of fit metrics, rmse, r-squared, and less heteroskedastic residual distributions. The 3 cluster solution shows the following number of records falling into each cluster. These are the same records that were therefore used to fit the final model in the last iteration. 
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+output <- clustreg(auto[,2:8], auto$mpg, cluster.size = 3, tries = 30, seed = 82510) 
+
+# cluster groupings and size
+table(clusters = output[[1]]) 
+model.1 <- output[[2]]$lm1 # model1 associated with final cluster 1 obs
+model.2 <- output[[2]]$lm2 # model2 associated with cluster 2 obs
+model.3 <- output[[2]]$lm3 #model3 associated with cluster 3 obs
+```
+
+The regression model for records falling into cluster 1 after 30 iterations yielded a R-squared of 0.95 on 128 degrees of freedom. As a reminder, the original fully fit model to all of the data had a r-squared of 0.82. 4 of the 7 predictors in the cluster 1 model show significantly strong nonzero linear relationships with ***mpg***  at the < 0.001 signficance level. 3 variables are insignificant and have beta estimates with coefficients that straddle 0 at the 95% confidence interval (cylinders, displacement, horsepower).
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+summary(model.1)
+```
+
+The cluster 2 model also yields a R-squared of 0.95 on 90 degrees of freedom. 6 of the 7 predictors show significantly strong nonzero linear relationships with ***mpg***. Only 1 variable, cylinders,  is an insignificant predictor of mpg in this submodel. 
+
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+summary(model.2)
+```
+
+The cluster 3 model has the highest R-square of 0.96 on 150 degrees of freedom. 5 of the 7 predictors show significant nonzero linear relationships with ***mpg***. Displacement and horsepower do not appear to share any linear relationship with the target variable for the subset of cars that were in the 3rd cluster.   
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+summary(model.3)
+```
+
+Reviewing the interquartile range (IQR) of the residual distributions for each of the 3 subset models when compared to the original fully fit model illustrates the variance reduction obtained by modeling these data as different populations, yielding better model fits as the IQR (middle 50% range of residuals) are clear and substantially smaller than the single full model.
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+library(ggplot2)
+
+temp <- data.frame(model = c(rep("full model", length(residuals(full.model))), 
+                     rep("Cluster 1", length(residuals(model.1))), 
+                     rep("Cluster 2", length(residuals(model.2))), 
+                     rep("Cluster 3", length(residuals(model.3)))), 
+           residual.error = c(residuals(full.model), residuals(model.1), 
+                              residuals(model.2), residuals(model.3)))
+
+plot1 <- ggplot(temp, aes(x = model, y = residual.error)) + geom_boxplot()
+plot1 + ggtitle("Residuals from Clusterwise Models vs. Single Full Model")
+
+residual.IQR <- data.frame(IQR(residuals(full.model)), 
+                      IQR(residuals(model.1)), 
+                      IQR(residuals(model.2)), 
+                      IQR(residuals(model.3)))
+names(residual.IQR) <- c("Full Model", "Model 1", "Model2", "Model3")
+row.names(residual.IQR) <- "IQR"
+# Residual Error IQR for each model
+residual.IQR 
+
+```
+  
+Additionally, residual plots of the single full model versus each of the 3 specific cluster models shows that the use of subset models removed almost all visual indication of heteroskedasticity in the residual error distributions. The full model meanwhile, while having a very large percentage of variance explained by the model, shows some heteroskedastic fanning of the residual errors in the higher range of ***mpg***. Using clusterwise regression appears to have helped reduce a lot of the pattern in the residual distributions from the full model. 
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+
+par(mfrow = c(2, 2))
+
+scatter.smooth(fitted(full.model), residuals(full.model), xlab = "Fitted Values", ylab = "Residuals",
+               main = "Full Model")
+lines(loess.smooth(fitted(full.model), residuals(full.model)), col="red", lty=1, lwd=2)
+
+scatter.smooth(fitted(model.1), residuals(model.1), xlab = "Fitted Values", ylab = "Residuals",
+               main = "Cluster 1 Model")
+lines(loess.smooth(fitted(model.1), residuals(model.1)), col="red", lty=1, lwd=2)
+
+scatter.smooth(fitted(model.2), residuals(model.2), xlab = "Fitted Values", ylab = "Residuals",
+               main = "Cluster 2 Model")
+lines(loess.smooth(fitted(model.2), residuals(model.2)), col="red", lty=1, lwd=2)
+
+scatter.smooth(fitted(model.3), residuals(model.3), xlab = "Fitted Values", ylab = "Residuals",
+               main = "Cluster 3 Model")
+lines(loess.smooth(fitted(model.3), residuals(model.3)), col="red", lty=1, lwd=2)
+
+```
+
+#### Visualize Clusters
+
+Using the final clusters stored in the  ***clustreg*** output list, I visualized the final assigned clusters after applying dimension reduction to the ***auto*** dataset. I ran a principal components analysis on all 7 predictors of ***mpg***. The first 3 principals components accounted for 90% of the variation in the entire predictor dataset, so PC1-3 are adequate representations of the data space. Using a 3D scatterplot, I overlayed the final clusters created from the regression algorithm as a color parameter. It is clear here that we see at least 1 distinct cluster in green, but the other 2 clusters are not confirmed upon visual inspection of the first 3 principal components. This might indicate that on these data, clusterwise regression with k = 3 may not perfectly identify natural clusters of cars. Considering that the full model already does a very good job of explaining the variability in ***mpg***, perhaps 3 distinct subset populations of cars is a stretch of a theory. 
+
+``` {r eval = TRUE, echo = FALSE, message = FALSE, comment = ""}
+
+# run PCA on Auto predictors and visualize first 2-3 eigenvectors (PCs)
+prcomp.out <- prcomp(auto[,2:8], scale = TRUE)
+dim(prcomp.out$x)
+# the value of the rotated data for each record for each PC
+rotated.x <- prcomp.out$x
+
+# variance explained by each PC
+prcomp.var <- prcomp.out$sdev^2
+# prcomp.var
+# Percent variance explained
+pve <- round(prcomp.var / sum(prcomp.var), 2)
+# pve
+# plot(cumsum(pve), xlab = "Principal Component", ylab = "Cumulative Propn of Variance Explained",
+#     ylim = c(0, 1), type = "b")
+
+
+PC1 <- rotated.x[,1]
+PC2 <- rotated.x[,2]
+PC3 <- rotated.x[,3]
+
+Cluster <- output[[1]]$final.cluster
+# plot(PC1, PC2, col = Cluster)
+library(scatterplot3d)
+scatterplot3d(PC1, PC3, PC2, color = Cluster, pch = 20, main = "Clusters vs. Principal Components")
+
+```
+
+#### Conclusion 
+
+Overall, clusterwise regression, which creates k clusters and k submodels as a biproduct of an iterative OLS regression approach shows the potential power of the method in the right environment on the right dataset where multiple populations may be present. I do not think this method is necessarily a go to for any regression problem, but can be used as a diagnostic tool and alternative approach worth exploring when standard OLS regression, regularization methods, and nonlinear methods like natural splines and GAMs may fail to work on the dataset. It should be noted that this analysis is illustrative only and the dataset was chosen because of its simple, clean, and academic nature.   No cross-validation was applied to measure the potential bias and prediction variance of these models on unseen data, which should be considered when applying ***clustreg*** to a prediction problem. If ***clustreg*** were to be applied to unseen data, the derived clusters would need to be predicted ahead of time! Therefore, modeling the clusters arrived at using a general linear model or other classification method is suggested to be applicable for prediction. 
+
+
